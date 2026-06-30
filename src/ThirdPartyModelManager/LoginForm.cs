@@ -1,22 +1,31 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace ThirdPartyModelManager;
 
 public sealed class LoginForm : Form
 {
+    private static readonly string[] FailureQuotes =
+    [
+        "知之者不如好之者，好之者不如乐之者。——孔子",
+        "路漫漫其修远兮，吾将上下而求索。——屈原",
+        "天行健，君子以自强不息。——《周易》",
+        "纸上得来终觉浅，绝知此事要躬行。——陆游",
+        "千里之行，始于足下。——老子",
+        "不积跬步，无以至千里。——荀子",
+        "学而不思则罔，思而不学则殆。——孔子",
+        "山重水复疑无路，柳暗花明又一村。——陆游",
+        "长风破浪会有时，直挂云帆济沧海。——李白",
+        "博观而约取，厚积而薄发。——苏轼"
+    ];
+
     private readonly TextBox passwordBox = new();
     private readonly Label statusLabel = new();
     private readonly Button loginButton = new();
-    private readonly System.Windows.Forms.Timer clockTimer = new();
+    private readonly Random random = new();
 
     public LoginForm()
     {
         BuildUi();
-        clockTimer.Interval = 1000;
-        clockTimer.Tick += (_, _) => UpdateStatus();
-        clockTimer.Start();
-        UpdateStatus();
     }
 
     private void BuildUi()
@@ -40,7 +49,7 @@ public sealed class LoginForm : Form
 
         var hint = new Label
         {
-            Text = "请输入按当前电脑时间生成的动态密码。",
+            Text = "请输入登录密码。",
             AutoSize = false,
             ForeColor = SystemColors.GrayText,
             Location = new Point(24, 56),
@@ -75,6 +84,7 @@ public sealed class LoginForm : Form
         statusLabel.Location = new Point(24, 140);
         statusLabel.Size = new Size(366, 42);
         statusLabel.ForeColor = SystemColors.GrayText;
+        statusLabel.Text = "";
 
         Controls.Add(title);
         Controls.Add(hint);
@@ -94,18 +104,8 @@ public sealed class LoginForm : Form
         }
 
         passwordBox.SelectAll();
-        statusLabel.ForeColor = Color.Firebrick;
-        statusLabel.Text = "密码错误。请确认电脑时间正确，并使用当前分钟的动态密码。";
-    }
-
-    private void UpdateStatus()
-    {
-        if (statusLabel.ForeColor == Color.Firebrick)
-        {
-            return;
-        }
-
-        statusLabel.Text = $"当前电脑时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n密码格式：yyyyMMddHHmm";
+        statusLabel.ForeColor = SystemColors.GrayText;
+        statusLabel.Text = FailureQuotes[random.Next(FailureQuotes.Length)];
     }
 
     private static bool IsValidPassword(string input, DateTime now)
@@ -115,11 +115,10 @@ public sealed class LoginForm : Form
             return false;
         }
 
-        var inputHash = Hash(input);
         for (var offset = -1; offset <= 1; offset++)
         {
-            var expected = now.AddMinutes(offset).ToString("yyyyMMddHHmm");
-            if (CryptographicOperations.FixedTimeEquals(inputHash, Hash(expected)))
+            var expected = BuildPassword(now.AddMinutes(offset));
+            if (ContainsPasswordSequence(input, expected))
             {
                 return true;
             }
@@ -127,8 +126,25 @@ public sealed class LoginForm : Form
         return false;
     }
 
-    private static byte[] Hash(string value)
+    private static string BuildPassword(DateTime value)
     {
-        return SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return (value.Year % 10).ToString() +
+               (value.Month % 10).ToString() +
+               (value.Day % 10).ToString() +
+               (value.Hour % 10).ToString();
+    }
+
+    private static bool ContainsPasswordSequence(string input, string expected)
+    {
+        var digits = new StringBuilder(input.Length);
+        foreach (var ch in input)
+        {
+            if (char.IsDigit(ch))
+            {
+                digits.Append(ch);
+            }
+        }
+
+        return digits.ToString().Contains(expected, StringComparison.Ordinal);
     }
 }
