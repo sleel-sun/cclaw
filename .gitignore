@@ -1,0 +1,14 @@
+bin/
+obj/
+*.user
+*.pdb
+*.log
+*.bak*
+*.rejected*
+*.clobbered*
+cclaw-assist.json*
+auth-profiles.json
+auth-state.json
+models.json
+*.batch.json
+*.pem
