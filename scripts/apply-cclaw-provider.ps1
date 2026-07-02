@@ -30,6 +30,52 @@ param(
     [int]$MaxTokens = 8192,
 
     [Parameter(Mandatory = $false)]
+    [bool]$ToolOptimizedCompat = $true,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsTools = $true,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsStore = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsDeveloperRole = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsReasoningEffort = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsUsageInStreaming = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$SupportsStrictMode = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresStringContent = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresToolResultName = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresAssistantAfterToolResult = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresThinkingAsText = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresMistralToolIds = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$RequiresOpenAiAnthropicToolPayload = $false,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("max_tokens", "max_completion_tokens")]
+    [string]$MaxTokensField = "max_tokens",
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$UnsupportedToolSchemaKeywords = @("minLength", "maxLength", "minItems", "maxItems", "minContains", "maxContains"),
+
+    [Parameter(Mandatory = $false)]
     [string]$HeadersJson,
 
     [Parameter(Mandatory = $false)]
@@ -251,9 +297,10 @@ function New-ProviderModel {
         [string]$ModelApi,
         [string[]]$Inputs,
         [int]$Window,
-        [int]$Tokens
+        [int]$Tokens,
+        [object]$Compat
     )
-    return [pscustomobject]@{
+    $model = [pscustomobject]@{
         id            = $Id
         name          = $Name
         api           = $ModelApi
@@ -267,6 +314,45 @@ function New-ProviderModel {
         }
         contextWindow = $Window
         maxTokens     = $Tokens
+    }
+    if ($null -ne $Compat) {
+        Set-ObjectProperty -Object $model -Name "compat" -Value $Compat
+    }
+    return $model
+}
+
+function New-ToolOptimizedCompat {
+    param(
+        [bool]$Tools,
+        [bool]$Store,
+        [bool]$DeveloperRole,
+        [bool]$ReasoningEffort,
+        [bool]$UsageInStreaming,
+        [bool]$StrictMode,
+        [string]$TokensField,
+        [bool]$StringContent,
+        [bool]$ToolResultName,
+        [bool]$AssistantAfterToolResult,
+        [bool]$ThinkingAsText,
+        [bool]$MistralToolIds,
+        [bool]$OpenAiAnthropicToolPayload,
+        [string[]]$UnsupportedSchemaKeywords
+    )
+    return [pscustomobject]@{
+        supportsTools                       = $Tools
+        supportsStore                       = $Store
+        supportsDeveloperRole               = $DeveloperRole
+        supportsReasoningEffort             = $ReasoningEffort
+        supportsUsageInStreaming            = $UsageInStreaming
+        supportsStrictMode                  = $StrictMode
+        requiresStringContent               = $StringContent
+        requiresToolResultName              = $ToolResultName
+        requiresAssistantAfterToolResult    = $AssistantAfterToolResult
+        requiresThinkingAsText              = $ThinkingAsText
+        requiresMistralToolIds              = $MistralToolIds
+        requiresOpenAiAnthropicToolPayload  = $OpenAiAnthropicToolPayload
+        unsupportedToolSchemaKeywords       = @($UnsupportedSchemaKeywords | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+        maxTokensField                      = $TokensField
     }
 }
 
@@ -387,6 +473,24 @@ if ($null -eq $authProfiles) {
 
 $resolvedKey = Resolve-ApiKey -ExplicitKey $ApiKey -Provider $provider -EnvVar $AuthEnvVar -Config $config -AuthProfiles $authProfiles -ForcePrompt:$PromptForApiKey -AllowMissing:$AllowMissingApiKey
 $headers = Parse-Headers -Json $HeadersJson
+$compat = $null
+if ($ToolOptimizedCompat) {
+    $compat = New-ToolOptimizedCompat `
+        -Tools $SupportsTools `
+        -Store $SupportsStore `
+        -DeveloperRole $SupportsDeveloperRole `
+        -ReasoningEffort $SupportsReasoningEffort `
+        -UsageInStreaming $SupportsUsageInStreaming `
+        -StrictMode $SupportsStrictMode `
+        -TokensField $MaxTokensField `
+        -StringContent $RequiresStringContent `
+        -ToolResultName $RequiresToolResultName `
+        -AssistantAfterToolResult $RequiresAssistantAfterToolResult `
+        -ThinkingAsText $RequiresThinkingAsText `
+        -MistralToolIds $RequiresMistralToolIds `
+        -OpenAiAnthropicToolPayload $RequiresOpenAiAnthropicToolPayload `
+        -UnsupportedSchemaKeywords $UnsupportedToolSchemaKeywords
+}
 
 $modelsList = @()
 for ($i = 0; $i -lt $modelIds.Count; $i++) {
@@ -394,7 +498,7 @@ for ($i = 0; $i -lt $modelIds.Count; $i++) {
     if ($modelNames -and $modelNames.Count -gt $i -and -not [string]::IsNullOrWhiteSpace($modelNames[$i])) {
         $name = $modelNames[$i]
     }
-    $modelsList += New-ProviderModel -Id $modelIds[$i] -Name $name -ModelApi $Api -Inputs $inputTypes -Window $ContextWindow -Tokens $MaxTokens
+    $modelsList += New-ProviderModel -Id $modelIds[$i] -Name $name -ModelApi $Api -Inputs $inputTypes -Window $ContextWindow -Tokens $MaxTokens -Compat $compat
 }
 
 $providerConfig = New-ProviderConfig -Url $BaseUrl -ProviderApi $Api -Key $resolvedKey -Headers $headers -Models $modelsList

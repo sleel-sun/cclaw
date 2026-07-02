@@ -1,5 +1,6 @@
 bin/
 obj/
+release/ThirdPartyModelManager/
 *.user
 *.pdb
 *.log

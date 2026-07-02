@@ -116,6 +116,22 @@ function New-GrokProvider {
         [string]$Key,
         [string]$Url
     )
+    $compat = [pscustomobject]@{
+        supportsTools                       = $true
+        supportsStore                       = $false
+        supportsDeveloperRole               = $false
+        supportsReasoningEffort             = $false
+        supportsUsageInStreaming            = $false
+        supportsStrictMode                  = $false
+        requiresStringContent               = $false
+        requiresToolResultName              = $false
+        requiresAssistantAfterToolResult    = $false
+        requiresThinkingAsText              = $false
+        requiresMistralToolIds              = $false
+        requiresOpenAiAnthropicToolPayload  = $false
+        unsupportedToolSchemaKeywords       = @("minLength", "maxLength", "minItems", "maxItems", "minContains", "maxContains")
+        maxTokensField                      = "max_tokens"
+    }
     return [pscustomobject]@{
         baseUrl        = $Url
         api            = "openai-completions"
@@ -136,6 +152,7 @@ function New-GrokProvider {
                 }
                 contextWindow = 200000
                 maxTokens     = 8192
+                compat        = $compat
             },
             [pscustomobject]@{
                 id            = "grok-4.20-multi-agent-xhigh"
@@ -151,6 +168,7 @@ function New-GrokProvider {
                 }
                 contextWindow = 200000
                 maxTokens     = 8192
+                compat        = $compat
             },
             [pscustomobject]@{
                 id            = "grok-composer-2.5"
@@ -166,6 +184,7 @@ function New-GrokProvider {
                 }
                 contextWindow = 200000
                 maxTokens     = 8192
+                compat        = $compat
             }
         )
     }

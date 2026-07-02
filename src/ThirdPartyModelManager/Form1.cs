@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace ThirdPartyModelManager;
@@ -13,13 +14,18 @@ public partial class Form1 : Form
     private readonly ComboBox apiBox = new();
     private readonly NumericUpDown contextWindowBox = new();
     private readonly NumericUpDown maxTokensBox = new();
+    private readonly ComboBox savedProfilesBox = new();
     private readonly CheckedListBox modelList = new();
     private readonly TextBox manualModelsBox = new();
     private readonly TextBox logBox = new();
     private readonly Button fetchButton = new();
+    private readonly Button saveProfileButton = new();
+    private readonly Button deleteProfileButton = new();
     private readonly Button applyButton = new();
+    private readonly Button applyAllButton = new();
     private readonly Button watcherButton = new();
     private readonly Button selectAllButton = new();
+    private bool loadingProfile;
 
     private readonly string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
@@ -33,6 +39,7 @@ public partial class Form1 : Form
     private string ToolsDir => Path.Combine(AssistDir, "tools");
     private string ConfigPath => Path.Combine(AssistDir, "cclaw-assist.json");
     private string AgentDir => Path.Combine(AssistDir, "agents", "main", "agent");
+    private string ProfilesPath => Path.Combine(ToolsDir, "third-party-provider-profiles.json");
     private string ProviderScript => Path.Combine(AssistDir, "plugins", "third-party-models", "scripts", "apply-cclaw-provider.ps1");
     private string WatcherScript => Path.Combine(ToolsDir, "watch-cclaw-model-overlay.ps1");
     private string OpenClawCmd => Path.Combine(
@@ -53,7 +60,7 @@ public partial class Form1 : Form
             RowCount = 4,
             Padding = new Padding(12)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 172));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 202));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
@@ -76,11 +83,18 @@ public partial class Form1 : Form
         maxTokensBox.Minimum = 1;
         maxTokensBox.Value = 8192;
         maxTokensBox.Increment = 512;
+        savedProfilesBox.DropDownStyle = ComboBoxStyle.DropDownList;
 
         fetchButton.Click += async (_, _) => await FetchModelsAsync();
+        saveProfileButton.Click += (_, _) => SaveCurrentProfile();
+        deleteProfileButton.Click += (_, _) => DeleteSelectedProfile();
         applyButton.Click += async (_, _) => await ApplyAsync();
+        applyAllButton.Click += async (_, _) => await ApplyAllProfilesAsync();
         watcherButton.Click += (_, _) => StartWatcher();
         selectAllButton.Click += (_, _) => SetAllModelsChecked(true);
+        savedProfilesBox.SelectedIndexChanged += (_, _) => LoadSelectedProfile();
+
+        LoadProfilesIntoCombo();
     }
 
     private Control BuildProviderPanel()
@@ -90,7 +104,7 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 4,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(10)
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
@@ -106,16 +120,18 @@ public partial class Form1 : Form
         AddLabeledControl(grid, "接口类型", apiBox, 2, 1);
         AddLabeledControl(grid, "上下文", contextWindowBox, 0, 2);
         AddLabeledControl(grid, "Max Tokens", maxTokensBox, 2, 2);
+        AddLabeledControl(grid, "配置列表", savedProfilesBox, 0, 3);
+        grid.SetColumnSpan(savedProfilesBox, 3);
 
         var hint = new Label
         {
-            Text = "OpenAI 兼容供应商会请求 Base URL + /models；无法获取时可在下方手工输入模型 ID。",
+            Text = "OpenAI 兼容供应商会请求 Base URL + /models；可保存多组供应商配置后批量写入。",
             Dock = DockStyle.Fill,
             AutoSize = false,
             ForeColor = SystemColors.GrayText,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        grid.Controls.Add(hint, 0, 3);
+        grid.Controls.Add(hint, 0, 4);
         grid.SetColumnSpan(hint, 4);
 
         return group;
@@ -160,14 +176,23 @@ public partial class Form1 : Form
         fetchButton.Width = 150;
         selectAllButton.Text = "全选";
         selectAllButton.Width = 80;
+        saveProfileButton.Text = "保存供应商";
+        saveProfileButton.Width = 120;
+        deleteProfileButton.Text = "删除供应商";
+        deleteProfileButton.Width = 120;
         applyButton.Text = "写入配置";
         applyButton.Width = 130;
+        applyAllButton.Text = "写入全部";
+        applyAllButton.Width = 110;
         watcherButton.Text = "启动自动补回";
         watcherButton.Width = 150;
 
         panel.Controls.Add(fetchButton);
         panel.Controls.Add(selectAllButton);
+        panel.Controls.Add(saveProfileButton);
+        panel.Controls.Add(deleteProfileButton);
         panel.Controls.Add(applyButton);
+        panel.Controls.Add(applyAllButton);
         panel.Controls.Add(watcherButton);
         return panel;
     }
@@ -243,24 +268,9 @@ public partial class Form1 : Form
 
     private async Task ApplyAsync()
     {
-        var provider = NormalizeProviderId(providerBox.Text);
-        var baseUrl = baseUrlBox.Text.Trim();
-        var apiKey = apiKeyBox.Text.Trim();
-        var models = GetSelectedModels();
-
-        if (string.IsNullOrWhiteSpace(provider))
+        var profile = BuildCurrentProfile(showWarnings: true);
+        if (profile == null)
         {
-            MessageBox.Show("请填写有效供应商 ID。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            MessageBox.Show("请填写 Base URL。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        if (models.Count == 0)
-        {
-            MessageBox.Show("请至少选择或手工输入一个模型 ID。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         if (!File.Exists(ProviderScript))
@@ -271,43 +281,267 @@ public partial class Form1 : Form
 
         await RunUiTaskAsync(applyButton, async () =>
         {
-            Directory.CreateDirectory(ToolsDir);
-            var batchPath = Path.Combine(ToolsDir, $"cclaw-provider-{provider}.batch.json");
-            Log($"写入供应商 {provider}，模型数 {models.Count}");
-
-            var args = new List<string>
-            {
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", ProviderScript,
-                "-ProviderId", provider,
-                "-BaseUrl", baseUrl,
-                "-Api", apiBox.Text,
-                "-InputTypes", "text",
-                "-ContextWindow", ((int)contextWindowBox.Value).ToString(),
-                "-MaxTokens", ((int)maxTokensBox.Value).ToString(),
-                "-ConfigPath", ConfigPath,
-                "-AgentDir", AgentDir,
-                "-OverlayBatchPath", batchPath
-            };
-
-            if (!string.IsNullOrWhiteSpace(apiKey))
-            {
-                args.Add("-ApiKey");
-                args.Add(apiKey);
-            }
-            else
-            {
-                args.Add("-AllowMissingApiKey");
-            }
-
-            args.Add("-ModelIds");
-            args.Add(string.Join(",", models));
-
-            await RunProcessAsync("powershell.exe", args);
-            VerifyAppliedConfig(provider, models);
+            await ApplyProviderProfileAsync(profile);
+            VerifyAppliedConfig(profile.ProviderId, profile.ModelIds);
             Log("磁盘配置已写入并校验通过。当前客户端可能仍有缓存；界面未刷新时请重启 CClaw，或点击“启动自动补回”。");
         });
+    }
+
+    private async Task ApplyAllProfilesAsync()
+    {
+        var profiles = LoadProviderProfiles();
+        if (profiles.Count == 0)
+        {
+            MessageBox.Show("请先保存至少一组供应商配置。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (!File.Exists(ProviderScript))
+        {
+            MessageBox.Show($"找不到脚本：{ProviderScript}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        await RunUiTaskAsync(applyAllButton, async () =>
+        {
+            foreach (var profile in profiles)
+            {
+                await ApplyProviderProfileAsync(profile);
+                VerifyAppliedConfig(profile.ProviderId, profile.ModelIds);
+            }
+            Log($"已写入全部供应商配置：{profiles.Count} 组。");
+        });
+    }
+
+    private async Task ApplyProviderProfileAsync(ProviderProfile profile)
+    {
+        Directory.CreateDirectory(ToolsDir);
+        var batchPath = Path.Combine(ToolsDir, $"cclaw-provider-{profile.ProviderId}.batch.json");
+        Log($"写入供应商 {profile.ProviderId}，模型数 {profile.ModelIds.Count}");
+
+        var args = new List<string>
+        {
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ProviderScript,
+            "-ProviderId", profile.ProviderId,
+            "-BaseUrl", profile.BaseUrl,
+            "-Api", profile.Api,
+            "-InputTypes", "text",
+            "-ContextWindow", profile.ContextWindow.ToString(),
+            "-MaxTokens", profile.MaxTokens.ToString(),
+            "-ConfigPath", ConfigPath,
+            "-AgentDir", AgentDir,
+            "-OverlayBatchPath", batchPath
+        };
+
+        if (!string.IsNullOrWhiteSpace(profile.ApiKey))
+        {
+            args.Add("-ApiKey");
+            args.Add(profile.ApiKey);
+        }
+        else
+        {
+            args.Add("-AllowMissingApiKey");
+        }
+
+        args.Add("-ModelIds");
+        args.Add(string.Join(",", profile.ModelIds));
+
+        await RunProcessAsync("powershell.exe", args);
+    }
+
+    private ProviderProfile? BuildCurrentProfile(bool showWarnings)
+    {
+        var provider = NormalizeProviderId(providerBox.Text);
+        var baseUrl = baseUrlBox.Text.Trim();
+        var models = GetSelectedModels();
+
+        if (string.IsNullOrWhiteSpace(provider))
+        {
+            if (showWarnings)
+            {
+                MessageBox.Show("请填写有效供应商 ID。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            if (showWarnings)
+            {
+                MessageBox.Show("请填写 Base URL。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return null;
+        }
+        if (models.Count == 0)
+        {
+            if (showWarnings)
+            {
+                MessageBox.Show("请至少选择或手工输入一个模型 ID。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return null;
+        }
+
+        return new ProviderProfile
+        {
+            ProviderId = provider,
+            BaseUrl = baseUrl,
+            ApiKey = apiKeyBox.Text.Trim(),
+            Api = string.IsNullOrWhiteSpace(apiBox.Text) ? "openai-completions" : apiBox.Text.Trim(),
+            ContextWindow = (int)contextWindowBox.Value,
+            MaxTokens = (int)maxTokensBox.Value,
+            ModelIds = models
+        };
+    }
+
+    private void SaveCurrentProfile()
+    {
+        var profile = BuildCurrentProfile(showWarnings: true);
+        if (profile == null)
+        {
+            return;
+        }
+
+        var profiles = LoadProviderProfiles();
+        var existing = profiles.FindIndex(x => string.Equals(x.ProviderId, profile.ProviderId, StringComparison.OrdinalIgnoreCase));
+        if (existing >= 0 && string.IsNullOrWhiteSpace(profile.ApiKey))
+        {
+            profile.ApiKey = profiles[existing].ApiKey;
+        }
+        if (existing >= 0)
+        {
+            profiles[existing] = profile;
+        }
+        else
+        {
+            profiles.Add(profile);
+        }
+
+        SaveProviderProfiles(profiles);
+        LoadProfilesIntoCombo(profile.ProviderId);
+        Log($"已保存供应商配置：{profile.ProviderId}，模型数 {profile.ModelIds.Count}。");
+    }
+
+    private void DeleteSelectedProfile()
+    {
+        if (savedProfilesBox.SelectedItem is not ProviderProfileListItem item)
+        {
+            MessageBox.Show("请先选择一组已保存的供应商配置。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var profiles = LoadProviderProfiles();
+        profiles.RemoveAll(x => string.Equals(x.ProviderId, item.Profile.ProviderId, StringComparison.OrdinalIgnoreCase));
+        SaveProviderProfiles(profiles);
+        LoadProfilesIntoCombo();
+        Log($"已删除供应商配置：{item.Profile.ProviderId}。");
+    }
+
+    private void LoadSelectedProfile()
+    {
+        if (loadingProfile || savedProfilesBox.SelectedItem is not ProviderProfileListItem item)
+        {
+            return;
+        }
+
+        var profile = item.Profile;
+        providerBox.Text = profile.ProviderId;
+        baseUrlBox.Text = profile.BaseUrl;
+        apiKeyBox.Text = profile.ApiKey;
+        SelectApi(profile.Api);
+        contextWindowBox.Value = Math.Clamp(profile.ContextWindow, (int)contextWindowBox.Minimum, (int)contextWindowBox.Maximum);
+        maxTokensBox.Value = Math.Clamp(profile.MaxTokens, (int)maxTokensBox.Minimum, (int)maxTokensBox.Maximum);
+        modelList.Items.Clear();
+        manualModelsBox.Text = string.Join(Environment.NewLine, profile.ModelIds);
+        Log($"已加载供应商配置：{profile.ProviderId}。");
+    }
+
+    private void LoadProfilesIntoCombo(string? selectedProvider = null)
+    {
+        loadingProfile = true;
+        try
+        {
+            savedProfilesBox.Items.Clear();
+            var profiles = LoadProviderProfiles()
+                .OrderBy(x => x.ProviderId, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var profile in profiles)
+            {
+                savedProfilesBox.Items.Add(new ProviderProfileListItem(profile));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedProvider))
+            {
+                for (var i = 0; i < savedProfilesBox.Items.Count; i++)
+                {
+                    if (savedProfilesBox.Items[i] is ProviderProfileListItem item &&
+                        string.Equals(item.Profile.ProviderId, selectedProvider, StringComparison.OrdinalIgnoreCase))
+                    {
+                        savedProfilesBox.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            else if (savedProfilesBox.Items.Count > 0)
+            {
+                savedProfilesBox.SelectedIndex = 0;
+            }
+        }
+        finally
+        {
+            loadingProfile = false;
+        }
+
+        if (savedProfilesBox.SelectedIndex >= 0)
+        {
+            LoadSelectedProfile();
+        }
+    }
+
+    private List<ProviderProfile> LoadProviderProfiles()
+    {
+        if (!File.Exists(ProfilesPath))
+        {
+            return new List<ProviderProfile>();
+        }
+
+        try
+        {
+            var profiles = JsonSerializer.Deserialize<List<ProviderProfile>>(
+                File.ReadAllText(ProfilesPath, Encoding.UTF8),
+                ProviderProfileJsonOptions);
+            return profiles?
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProviderId) &&
+                            !string.IsNullOrWhiteSpace(x.BaseUrl) &&
+                            x.ModelIds.Count > 0)
+                .ToList() ?? new List<ProviderProfile>();
+        }
+        catch (Exception ex)
+        {
+            Log($"读取供应商配置列表失败：{ex.Message}");
+            return new List<ProviderProfile>();
+        }
+    }
+
+    private void SaveProviderProfiles(List<ProviderProfile> profiles)
+    {
+        Directory.CreateDirectory(ToolsDir);
+        var ordered = profiles
+            .GroupBy(x => x.ProviderId, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.Last())
+            .OrderBy(x => x.ProviderId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var json = JsonSerializer.Serialize(ordered, ProviderProfileJsonOptions);
+        File.WriteAllText(ProfilesPath, json + Environment.NewLine, Encoding.UTF8);
+    }
+
+    private void SelectApi(string value)
+    {
+        var api = string.IsNullOrWhiteSpace(value) ? "openai-completions" : value.Trim();
+        if (!apiBox.Items.Contains(api))
+        {
+            apiBox.Items.Add(api);
+        }
+        apiBox.SelectedItem = api;
     }
 
     private void StartWatcher()
@@ -401,7 +635,7 @@ public partial class Form1 : Form
             throw new InvalidOperationException($"写入后未找到供应商配置：{provider}");
         }
 
-        var providerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var providerModelsById = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in providerModels.EnumerateArray())
         {
             if (TryGetProperty(item, "id", out var id) && id.ValueKind == JsonValueKind.String)
@@ -409,14 +643,14 @@ public partial class Form1 : Form
                 var value = id.GetString();
                 if (!string.IsNullOrWhiteSpace(value))
                 {
-                    providerIds.Add(value);
+                    providerModelsById[value] = item;
                 }
             }
         }
 
         foreach (var model in expectedModels)
         {
-            if (!providerIds.Contains(model))
+            if (!providerModelsById.ContainsKey(model))
             {
                 missing.Add(model);
             }
@@ -425,6 +659,19 @@ public partial class Form1 : Form
         if (missing.Count > 0)
         {
             throw new InvalidOperationException("供应商配置缺少模型：" + string.Join(", ", missing.Take(10)));
+        }
+
+        foreach (var model in expectedModels)
+        {
+            if (!ModelHasToolCompat(providerModelsById[model]))
+            {
+                missing.Add(model);
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException("供应商配置缺少工具兼容字段：" + string.Join(", ", missing.Take(10)));
         }
 
         if (!TryGetProperty(root, "agents", out var agentsRoot) ||
@@ -449,6 +696,52 @@ public partial class Form1 : Form
         }
 
         Log($"校验通过：供应商模型 {expectedModels.Count} 个，选择器模型 {expectedModels.Count} 个。");
+    }
+
+    private static bool ModelHasToolCompat(JsonElement model)
+    {
+        if (!TryGetProperty(model, "compat", out var compat) || compat.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!TryGetProperty(compat, "supportsTools", out var supportsTools) ||
+            supportsTools.ValueKind != JsonValueKind.True)
+        {
+            return false;
+        }
+
+        foreach (var name in new[]
+        {
+            "supportsStore",
+            "supportsDeveloperRole",
+            "supportsReasoningEffort",
+            "supportsUsageInStreaming",
+            "supportsStrictMode",
+            "requiresStringContent",
+            "requiresToolResultName",
+            "requiresAssistantAfterToolResult",
+            "requiresThinkingAsText",
+            "requiresMistralToolIds",
+            "requiresOpenAiAnthropicToolPayload"
+        })
+        {
+            if (!TryGetProperty(compat, name, out var field) || field.ValueKind != JsonValueKind.False)
+            {
+                return false;
+            }
+        }
+
+        if (!TryGetProperty(compat, "unsupportedToolSchemaKeywords", out var unsupportedKeywords) ||
+            unsupportedKeywords.ValueKind != JsonValueKind.Array ||
+            unsupportedKeywords.GetArrayLength() == 0)
+        {
+            return false;
+        }
+
+        return TryGetProperty(compat, "maxTokensField", out var maxTokensField) &&
+               maxTokensField.ValueKind == JsonValueKind.String &&
+               maxTokensField.GetString() == "max_tokens";
     }
 
     private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
@@ -628,5 +921,32 @@ public partial class Form1 : Form
             return;
         }
         logBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+    }
+
+    private static readonly JsonSerializerOptions ProviderProfileJsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    private sealed class ProviderProfile
+    {
+        public string ProviderId { get; set; } = "";
+        public string BaseUrl { get; set; } = "";
+        public string ApiKey { get; set; } = "";
+        public string Api { get; set; } = "openai-completions";
+        public int ContextWindow { get; set; } = 128000;
+        public int MaxTokens { get; set; } = 8192;
+        public List<string> ModelIds { get; set; } = new();
+    }
+
+    private sealed class ProviderProfileListItem(ProviderProfile profile)
+    {
+        public ProviderProfile Profile { get; } = profile;
+
+        public override string ToString()
+        {
+            return $"{Profile.ProviderId}  |  {Profile.BaseUrl}  |  {Profile.ModelIds.Count} models";
+        }
     }
 }
